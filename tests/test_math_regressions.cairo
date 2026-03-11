@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use cavos::cavos_account::Cavos::{
+    use cavos::cavos_account::CavosAccount::{
         SessionTimeLimits, SessionTimeLimitsStorePacking, SessionUsageLimits,
         SessionUsageLimitsStorePacking, oauth_policy_start,
     };
