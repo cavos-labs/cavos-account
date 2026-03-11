@@ -10,7 +10,7 @@
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Please report security issues by emailing **security@cavos.xyz**. Include:
+Please report security issues by emailing **adrianvrj@cavos.xyz**. Include:
 
 1. Description of the vulnerability
 2. Steps to reproduce or proof-of-concept
