@@ -1,0 +1,5 @@
+target
+Scarb.lock
+snfoundry.toml
+.snfoundry_cache
+scripts

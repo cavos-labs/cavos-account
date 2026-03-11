@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "cairo-optimization": {
+      "source": "keep-starknet-strange/starknet-agentic",
+      "sourceType": "github",
+      "computedHash": "271443985eb7f96ae33388e42af601e29d1712153470e5ce6a998efb55c944b7"
+    }
+  }
+}

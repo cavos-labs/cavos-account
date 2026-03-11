@@ -1,0 +1,34 @@
+[package]
+name = "cavos"
+version = "0.1.0"
+edition = "2024_07"
+
+[dependencies]
+garaga = { git = "https://github.com/keep-starknet-strange/garaga.git", branch = "main" }
+starknet = "2.14.0"
+
+[cairo]
+sierra-replace-ids = false
+inlining-strategy = 2
+
+[dev-dependencies]
+snforge_std = "0.53.0"
+assert_macros = "2.14.0"
+
+[[target.starknet-contract]]
+casm = true
+casm-add-pythonic-hints = true
+
+[scripts]
+test = "snforge test"
+
+[tool.scarb]
+allow-prebuilt-plugins = ["snforge_std"]
+
+[sncast.dev]                                         # Define a profile name
+account = "my_account"
+block-explorer = "Voyager"
+
+[sncast.release]                                         # Define a profile name
+account = "my_account"
+block-explorer = "Voyager"
