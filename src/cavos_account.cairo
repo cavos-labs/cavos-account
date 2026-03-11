@@ -6,7 +6,7 @@
 use starknet::{ContractAddress, account::Call};
 
 #[starknet::interface]
-pub trait ICavos<TContractState> {
+pub trait ICavosAccount<TContractState> {
     /// Get the address seed (identifies the owner).
     fn get_address_seed(self: @TContractState) -> felt252;
     /// Get the JWKS registry address.
@@ -75,7 +75,7 @@ pub trait IOutsideExecution<TContractState> {
 }
 
 #[starknet::contract(account)]
-pub mod Cavos {
+pub mod CavosAccount {
     use core::ecdsa::check_ecdsa_signature;
     use core::hash::HashStateTrait;
     use core::num::traits::Zero;
@@ -366,7 +366,7 @@ pub mod Cavos {
     }
 
     #[abi(embed_v0)]
-    impl SignatureValidation of super::ICavos<ContractState> {
+    impl SignatureValidation of super::ICavosAccount<ContractState> {
         fn get_address_seed(self: @ContractState) -> felt252 {
             self.address_seed.read()
         }
