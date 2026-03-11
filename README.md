@@ -48,6 +48,84 @@ scarb build
 snforge test
 ```
 
+## RSA-2048 Signature Verification
+
+JWT signatures are verified on-chain using [Garaga's RSA-2048 implementation](https://garaga.gitbook.io/garaga/using-garaga-libraries-in-your-cairo-project/rsa-signatures#python) — an audited, ~11.8M gas verifier based on multi-precision arithmetic over RNS channels.
+
+### Cairo contract usage
+
+```cairo
+use garaga::signatures::rsa::{
+    RSA2048PublicKey, RSA2048SignatureWithHint,
+    is_valid_rsa2048_sha256_signature,
+};
+
+// Construct public key from 24 × u96 limbs stored in JWKSKey
+let public_key = RSA2048PublicKey { modulus: key.to_rsa2048_chunks() };
+
+// Verify: internally computes SHA-256 + PKCS#1 v1.5 + s^65537 mod n
+assert!(
+    is_valid_rsa2048_sha256_signature(@sig_with_hint, @public_key, @jwt_signed_bytes),
+    'Invalid JWT signature',
+);
+```
+
+### Calldata generation (Python)
+
+```python
+from garaga.starknet.tests_and_calldata_generators.signatures import RSA2048Signature
+
+sig = RSA2048Signature.from_sha256_message(jwt_signed_bytes, seed=0)
+calldata = sig.serialize_sha256_with_hints(
+    message=jwt_signed_bytes, prepend_public_key=False
+)
+# → 864 felt252 values: sig(24) + encoded_msg(24) + reductions(17×48)
+```
+
+### Calldata generation (TypeScript)
+
+```typescript
+import { rsa2048CalldataBuilder } from 'garaga';
+
+const calldata = rsa2048CalldataBuilder(
+    sigBigInt,          // RSA signature as bigint
+    msgBytes,           // JWT header.payload as Uint8Array
+    modulusBigInt,      // RSA modulus as bigint
+    false               // don't prepend public key (already in registry)
+);
+// calldata.length === 864
+```
+
+### PKCS#1 v1.5 encoding
+
+Garaga encodes the SHA-256 digest as:
+```
+0x00 || 0x01 || 0xFF×202 || 0x00 || DigestInfo(19 bytes) || SHA-256(32 bytes)
+```
+This is verified inside `is_valid_rsa2048_sha256_signature` — no manual encoding needed in the contract.
+
+### JWKSKey format
+
+Public keys are stored as 24 × `felt252` limbs (96-bit words, little-endian), matching Garaga's `RSA2048Chunks` layout:
+
+```cairo
+pub struct JWKSKey {
+    pub n0: felt252,  pub n1: felt252,  // ...
+    pub n23: felt252,
+    pub provider: felt252,
+    pub valid_until: u64,
+    pub is_active: bool,
+}
+```
+
+Extract limbs from a PEM/JWK modulus (Python):
+```python
+mask = (1 << 96) - 1
+limbs = [(n >> (96 * i)) & mask for i in range(24)]
+```
+
+---
+
 ## Session Key Flow
 
 1. User authenticates with Google/Apple → receives JWT
