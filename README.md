@@ -1,5 +1,13 @@
 # cavos-account
 
+[![Tests](https://github.com/cavos-labs/cavos-account/actions/workflows/test.yml/badge.svg)](https://github.com/cavos-labs/cavos-account/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Cairo](https://img.shields.io/badge/Cairo-2.14.0-orange.svg)](https://docs.swmansion.com/scarb/)
+[![Scarb](https://img.shields.io/badge/Scarb-2.14.0-purple.svg)](https://docs.swmansion.com/scarb/)
+[![snforge](https://img.shields.io/badge/snforge-0.53.0-green.svg)](https://foundry-rs.github.io/starknet-foundry/)
+[![Garaga](https://img.shields.io/badge/Garaga-RSA--2048-red.svg)](https://garaga.gitbook.io/garaga/using-garaga-libraries-in-your-cairo-project/rsa-signatures)
+[![Starknet](https://img.shields.io/badge/StarkNet-Sepolia%20%7C%20Mainnet-black.svg)](https://starknet.io)
+
 On-chain OAuth wallets on Starknet. Verify Google/Apple JWTs directly in a Cairo smart contract — no backend, no custodian.
 
 ## Overview
