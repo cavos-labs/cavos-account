@@ -22,31 +22,31 @@ mod tests {
     }
 
     /// Build a minimal signature array for oauth_policy_start tests.
-    /// Layout: 19 zeros | 864 (garaga_len) | 864 zeros | jwt_bytes_len | ceil(len/31) zeros
+    /// Layout: 25 zeros | 864 (garaga_len) | 864 zeros | jwt_bytes_len | ceil(len/31) zeros
     fn build_oauth_signature_prefix(jwt_bytes_len: usize) -> Array<felt252> {
         let mut signature: Array<felt252> = array![];
 
-        // Indices [0..18]: header fields before GARAGA_RSA_START=19
+        // Indices [0..24]: header fields before GARAGA_RSA_START=25
         let mut i: usize = 0;
-        while i != 19 {
+        while i != 25 {
             signature.append(0);
             i += 1;
         }
 
-        // Index [19]: garaga_rsa_len = 864
+        // Index [25]: garaga_rsa_len = 864
         signature.append(864);
 
-        // Indices [20..883]: garaga witness data (864 felts)
+        // Indices [26..889]: garaga witness data (864 felts)
         i = 0;
         while i != 864 {
             signature.append(0);
             i += 1;
         }
 
-        // Index [884]: jwt_bytes_len
+        // Index [890]: jwt_bytes_len
         signature.append(jwt_bytes_len.into());
 
-        // Indices [885..]: packed JWT chunks (ceil(jwt_bytes_len / 31))
+        // Indices [891..]: packed JWT chunks (ceil(jwt_bytes_len / 31))
         let jwt_chunks = (jwt_bytes_len + 30) / 31;
         i = 0;
         while i != jwt_chunks {
@@ -375,49 +375,62 @@ mod tests {
 
     #[test]
     fn test_compute_address_seed_deterministic() {
-        let s1 = compute_address_seed(42, 7);
-        let s2 = compute_address_seed(42, 7);
+        let s1 = compute_address_seed(1, 42, 7);
+        let s2 = compute_address_seed(1, 42, 7);
         assert!(s1 == s2, "same inputs must produce same seed");
         assert!(s1 != 0, "seed should be non-zero");
     }
 
     #[test]
     fn test_compute_address_seed_sub_sensitive() {
-        let s1 = compute_address_seed(1, 0);
-        let s2 = compute_address_seed(2, 0);
+        let s1 = compute_address_seed(9, 1, 0);
+        let s2 = compute_address_seed(9, 2, 0);
         assert!(s1 != s2, "different sub must produce different seed");
     }
 
     #[test]
+    fn test_compute_address_seed_issuer_sensitive() {
+        let s1 = compute_address_seed(1, 99, 0);
+        let s2 = compute_address_seed(2, 99, 0);
+        assert!(s1 != s2, "different issuers must produce different seed");
+    }
+
+    #[test]
     fn test_compute_address_seed_salt_sensitive() {
-        let s1 = compute_address_seed(0, 1);
-        let s2 = compute_address_seed(0, 2);
+        let s1 = compute_address_seed(5, 0, 1);
+        let s2 = compute_address_seed(5, 0, 2);
         assert!(s1 != s2, "different salt must produce different seed");
     }
 
     #[test]
     fn test_compute_address_seed_order_sensitive() {
-        let s1 = compute_address_seed(1, 2);
-        let s2 = compute_address_seed(2, 1);
-        assert!(s1 != s2, "seed must be order-sensitive (sub, salt)");
+        let s1 = compute_address_seed(1, 2, 3);
+        let s2 = compute_address_seed(2, 1, 3);
+        assert!(s1 != s2, "seed must be order-sensitive (issuer, sub, salt)");
     }
 
     #[test]
     fn test_verify_address_seed_correct() {
-        let seed = compute_address_seed(99, 42);
-        assert!(verify_address_seed(seed, 99, 42), "correct seed should verify");
+        let seed = compute_address_seed(7, 99, 42);
+        assert!(verify_address_seed(seed, 7, 99, 42), "correct seed should verify");
     }
 
     #[test]
     fn test_verify_address_seed_wrong_sub() {
-        let seed = compute_address_seed(99, 42);
-        assert!(!verify_address_seed(seed, 100, 42), "wrong sub should not verify");
+        let seed = compute_address_seed(7, 99, 42);
+        assert!(!verify_address_seed(seed, 7, 100, 42), "wrong sub should not verify");
+    }
+
+    #[test]
+    fn test_verify_address_seed_wrong_issuer() {
+        let seed = compute_address_seed(7, 99, 42);
+        assert!(!verify_address_seed(seed, 8, 99, 42), "wrong issuer should not verify");
     }
 
     #[test]
     fn test_verify_address_seed_wrong_salt() {
-        let seed = compute_address_seed(99, 42);
-        assert!(!verify_address_seed(seed, 99, 43), "wrong salt should not verify");
+        let seed = compute_address_seed(7, 99, 42);
+        assert!(!verify_address_seed(seed, 7, 99, 43), "wrong salt should not verify");
     }
 
     // ── nonce ─────────────────────────────────────────────────────────────────
@@ -455,42 +468,42 @@ mod tests {
 
     #[test]
     fn test_oauth_policy_start_skips_witnesses_before_jwt_chunks() {
-        // jwt_bytes_len=62 → jwt_chunks=2 → policy_start = 19+1+864+1+2 = 887
+        // jwt_bytes_len=62 → jwt_chunks=2 → policy_start = 25+1+864+1+2 = 893
         let signature = build_oauth_signature_prefix(62);
         let policy_start = oauth_policy_start(signature.span());
-        assert!(policy_start == 887, "policy_start should be 887 for 62-byte JWT");
+        assert!(policy_start == 893, "policy_start should be 893 for 62-byte JWT");
     }
 
     #[test]
     fn test_oauth_policy_start_zero_jwt_bytes() {
-        // jwt_bytes_len=0 → jwt_chunks=0 → policy_start = 884 + 1 + 0 = 885
+        // jwt_bytes_len=0 → jwt_chunks=0 → policy_start = 890 + 1 + 0 = 891
         let signature = build_oauth_signature_prefix(0);
         let policy_start = oauth_policy_start(signature.span());
-        assert!(policy_start == 885, "policy_start should be 885 for empty JWT");
+        assert!(policy_start == 891, "policy_start should be 891 for empty JWT");
     }
 
     #[test]
     fn test_oauth_policy_start_exactly_one_chunk() {
-        // jwt_bytes_len=31 → jwt_chunks=1 → policy_start = 884 + 1 + 1 = 886
+        // jwt_bytes_len=31 → jwt_chunks=1 → policy_start = 890 + 1 + 1 = 892
         let signature = build_oauth_signature_prefix(31);
         let policy_start = oauth_policy_start(signature.span());
-        assert!(policy_start == 886, "policy_start should be 886 for 31-byte JWT");
+        assert!(policy_start == 892, "policy_start should be 892 for 31-byte JWT");
     }
 
     #[test]
     fn test_oauth_policy_start_chunk_boundary() {
-        // jwt_bytes_len=32 → jwt_chunks=2 → policy_start = 884 + 1 + 2 = 887
+        // jwt_bytes_len=32 → jwt_chunks=2 → policy_start = 890 + 1 + 2 = 893
         let signature = build_oauth_signature_prefix(32);
         let policy_start = oauth_policy_start(signature.span());
-        assert!(policy_start == 887, "policy_start should be 887 for 32-byte JWT");
+        assert!(policy_start == 893, "policy_start should be 893 for 32-byte JWT");
     }
 
     #[test]
     fn test_oauth_policy_start_three_chunks() {
-        // jwt_bytes_len=93 → jwt_chunks=3 → policy_start = 884 + 1 + 3 = 888
+        // jwt_bytes_len=93 → jwt_chunks=3 → policy_start = 890 + 1 + 3 = 894
         let signature = build_oauth_signature_prefix(93);
         let policy_start = oauth_policy_start(signature.span());
-        assert!(policy_start == 888, "policy_start should be 888 for 93-byte JWT");
+        assert!(policy_start == 894, "policy_start should be 894 for 93-byte JWT");
     }
 
     #[test]
@@ -499,7 +512,7 @@ mod tests {
         // Build a signature with wrong garaga_len (610 instead of 864)
         let mut signature: Array<felt252> = array![];
         let mut i: usize = 0;
-        while i != 19 {
+        while i != 25 {
             signature.append(0);
             i += 1;
         }

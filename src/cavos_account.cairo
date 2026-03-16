@@ -79,7 +79,7 @@ pub mod CavosAccount {
     use core::ecdsa::check_ecdsa_signature;
     use core::hash::HashStateTrait;
     use core::num::traits::Zero;
-    use core::poseidon::{PoseidonTrait, hades_permutation};
+    use core::poseidon::PoseidonTrait;
     use starknet::account::Call;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
@@ -108,8 +108,6 @@ pub mod CavosAccount {
     const EXPECTED_ISS_FIREBASE: felt252 =
         0x68747470733a2f2f6361766f732e6170702f6669726562617365; // "https://cavos.app/firebase"
 
-    const EXPECTED_AUD: felt252 = 0x0;
-
     /// SRC-5 Interface ID
     const ISRC5_ID: felt252 = 0x3f918d17e5ee77373b56385708f855659a07f75997f365cf87748628532a055;
     /// SRC-6 Account Interface ID
@@ -117,7 +115,7 @@ pub mod CavosAccount {
     /// SNIP-9 Outside Execution V2 Interface ID (Rev 1)
     const SNIP9_OUTSIDE_EXECUTION_V2_ID: felt252 =
         0x1d1144bb2138366ff28d8e9ab57456b1d332ac42196230c3a602003c89872;
-    const GARAGA_RSA_START: usize = 19;
+    const GARAGA_RSA_START: usize = 25;
     const GARAGA_RSA_LEN: usize = 864;
 
     /// Session data for registered session keys
@@ -222,7 +220,7 @@ pub mod CavosAccount {
 
     #[storage]
     struct Storage {
-        /// Poseidon(sub, salt) — identifies the owner
+        /// Poseidon(issuer, sub, salt) — identifies the owner
         address_seed: felt252,
         /// Address of the JWKS registry contract
         jwks_registry: ContractAddress,
@@ -281,7 +279,11 @@ pub mod CavosAccount {
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState, address_seed: felt252, jwks_registry: ContractAddress) {
+    fn constructor(
+        ref self: ContractState,
+        address_seed: felt252,
+        jwks_registry: ContractAddress,
+    ) {
         self.address_seed.write(address_seed);
         self.jwks_registry.write(jwks_registry);
     }
@@ -718,6 +720,78 @@ pub mod CavosAccount {
             assert!(val == expected, "Claim hash mismatch after decoding");
         }
 
+        fn assert_allowed_issuer(self: @ContractState, issuer: felt252) {
+            assert!(
+                issuer == EXPECTED_ISS_GOOGLE
+                    || issuer == EXPECTED_ISS_APPLE
+                    || issuer == EXPECTED_ISS_FIREBASE,
+                "Invalid JWT issuer",
+            );
+        }
+
+        fn compute_owner_address_seed(
+            self: @ContractState, jwt_iss: felt252, jwt_sub: felt252, salt: felt252,
+            wallet_name: felt252,
+        ) -> felt252 {
+            let mut state = PoseidonTrait::new().update(jwt_iss).update(jwt_sub).update(salt);
+            if wallet_name != 0 {
+                state = state.update(wallet_name);
+            };
+            state.finalize()
+        }
+
+        fn assert_signed_jwt_claims_match(
+            self: @ContractState,
+            signature: Span<felt252>,
+            jwt_ba: @ByteArray,
+            jwt_sub: felt252,
+            jwt_nonce: felt252,
+            jwt_exp_felt: felt252,
+            jwt_kid: felt252,
+            jwt_iss: felt252,
+        ) {
+            let sub_offset: usize = (*signature[13]).try_into().unwrap();
+            let sub_len: usize = (*signature[14]).try_into().unwrap();
+            let nonce_offset: usize = (*signature[15]).try_into().unwrap();
+            let nonce_len: usize = (*signature[16]).try_into().unwrap();
+            let kid_offset: usize = (*signature[17]).try_into().unwrap();
+            let kid_len: usize = (*signature[18]).try_into().unwrap();
+            let exp_offset: usize = (*signature[19]).try_into().unwrap();
+            let exp_len: usize = (*signature[20]).try_into().unwrap();
+            let iss_offset: usize = (*signature[21]).try_into().unwrap();
+            let iss_len: usize = (*signature[22]).try_into().unwrap();
+
+            let (header_end, payload_start, payload_end) = split_signed_data(jwt_ba);
+            let payload_len = payload_end - payload_start;
+
+            self
+                .assert_claim_decimal_match(
+                    jwt_ba, payload_start, payload_len, exp_offset, exp_len, jwt_exp_felt,
+                );
+            self
+                .assert_decoded_claim_match(
+                    jwt_ba, payload_start, payload_len, iss_offset, iss_len, jwt_iss,
+                );
+            self.assert_allowed_issuer(jwt_iss);
+
+            if jwt_iss == EXPECTED_ISS_GOOGLE {
+                self
+                    .assert_claim_decimal_match(
+                        jwt_ba, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
+                    );
+            } else {
+                self
+                    .assert_decoded_claim_match(
+                        jwt_ba, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
+                    );
+            }
+            self
+                .assert_claim_hex_match(
+                    jwt_ba, payload_start, payload_len, nonce_offset, nonce_len, jwt_nonce,
+                );
+            self.assert_hashed_claim_match(jwt_ba, 0, header_end, kid_offset, kid_len, jwt_kid);
+        }
+
         /// Internal helper that performs JWT verification and session registration.
         /// Called from validate_full_oauth_and_register_session.
         fn verify_jwt_and_register_session_internal(
@@ -798,62 +872,27 @@ pub mod CavosAccount {
             let now = get_block_timestamp();
             assert!(now < valid_until, "Session expired");
 
-            // 5. Verify JWT not expired (timestamp-based)
-            let jwt_exp: u64 = jwt_exp_felt.try_into().expect('jwt_exp overflow');
-            assert!(now < jwt_exp, "JWT expired");
-
-            // 6. Verify address_seed = Poseidon(sub, salt, wallet_name?)
-            let computed_seed = if wallet_name != 0 {
-                PoseidonTrait::new().update(jwt_sub).update(salt).update(wallet_name).finalize()
-            } else {
-                let (h, _, _) = hades_permutation(jwt_sub, salt, 2);
-                h
-            };
-            assert!(computed_seed == self.address_seed.read(), "Address seed mismatch");
-
-            // 7. Verify JWKS key is valid and fetch in one call (fixes double-read bug)
+            // 5. Verify JWKS key is valid and fetch in one call (fixes double-read bug)
             let registry = IJWKSRegistryDispatcher { contract_address: self.jwks_registry.read() };
             let jwks_key = registry.get_key_if_valid(jwt_kid);
 
-            // 8. Verify RSA signature using Garaga RSA-2048
+            // 6. Verify RSA signature using Garaga RSA-2048
             Self::verify_rsa_garaga(signature, @jwks_key, @jwt_bytes);
 
-            // Verify issuer is Google, Apple, or Firebase
-            assert!(
-                jwt_iss == EXPECTED_ISS_GOOGLE
-                    || jwt_iss == EXPECTED_ISS_APPLE
-                    || jwt_iss == EXPECTED_ISS_FIREBASE,
-                "Invalid JWT issuer",
-            );
-
-            // SECURITY: Verify claims in JWT bytes match the provided parameters
-            // wallet_name at [12], claim offsets at [13-18]
-            let sub_offset: usize = (*signature[13]).try_into().unwrap();
-            let sub_len: usize = (*signature[14]).try_into().unwrap();
-            let nonce_offset: usize = (*signature[15]).try_into().unwrap();
-            let nonce_len: usize = (*signature[16]).try_into().unwrap();
-            let kid_offset: usize = (*signature[17]).try_into().unwrap();
-            let kid_len: usize = (*signature[18]).try_into().unwrap();
-
-            let (header_end, payload_start, payload_end) = split_signed_data(@jwt_bytes);
-            let payload_len = payload_end - payload_start;
-
-            if jwt_iss == EXPECTED_ISS_GOOGLE {
-                self
-                    .assert_claim_decimal_match(
-                        @jwt_bytes, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
-                    );
-            } else {
-                self
-                    .assert_decoded_claim_match(
-                        @jwt_bytes, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
-                    );
-            }
+            // 7. Bind all security-sensitive claims to the signed JWT bytes
             self
-                .assert_claim_hex_match(
-                    @jwt_bytes, payload_start, payload_len, nonce_offset, nonce_len, jwt_nonce,
+                .assert_signed_jwt_claims_match(
+                    signature, @jwt_bytes, jwt_sub, jwt_nonce, jwt_exp_felt, jwt_kid, jwt_iss,
                 );
-            self.assert_hashed_claim_match(@jwt_bytes, 0, header_end, kid_offset, kid_len, jwt_kid);
+
+            // 8. Verify JWT not expired (timestamp-based)
+            let jwt_exp: u64 = jwt_exp_felt.try_into().expect('jwt_exp overflow');
+            assert!(now < jwt_exp, "JWT expired");
+
+            // 9. Verify address_seed = Poseidon(iss, sub, salt[, wallet_name])
+            let computed_seed = self
+                .compute_owner_address_seed(jwt_iss, jwt_sub, salt, wallet_name);
+            assert!(computed_seed == self.address_seed.read(), "Address seed mismatch");
 
             // Register the session
             let session_data = SessionData {
@@ -1143,6 +1182,7 @@ pub mod CavosAccount {
             );
 
             let now = get_block_timestamp();
+            assert!(now >= session.time_limits.valid_after, "Session not yet active");
             assert!(now < session.usage_limits.renewal_deadline, "Renewal period expired");
         }
 
@@ -1185,24 +1225,11 @@ pub mod CavosAccount {
             let now = get_block_timestamp();
             assert!(now < valid_until, "Session expired");
 
-            // 4. Verify JWT not expired
-            let jwt_exp: u64 = jwt_exp_felt.try_into().expect('jwt_exp overflow');
-            assert!(now < jwt_exp, "JWT expired");
-
-            // 5. Verify address_seed = Poseidon(sub, salt, wallet_name?)
-            let computed_seed = if wallet_name != 0 {
-                PoseidonTrait::new().update(jwt_sub).update(salt).update(wallet_name).finalize()
-            } else {
-                let (h, _, _) = hades_permutation(jwt_sub, salt, 2);
-                h
-            };
-            assert!(computed_seed == self.address_seed.read(), "Address seed mismatch");
-
-            // 6. Verify JWKS key is valid and fetch in one call (fixes double-read bug)
+            // 4. Verify JWKS key is valid and fetch in one call (fixes double-read bug)
             let registry = IJWKSRegistryDispatcher { contract_address: self.jwks_registry.read() };
             let jwks_key = registry.get_key_if_valid(jwt_kid);
 
-            // 7. Extract JWT bytes and verify RSA signature using Garaga
+            // 5. Extract JWT bytes and verify RSA signature using Garaga
             let garaga_len: usize = (*signature[GARAGA_RSA_START]).try_into().unwrap();
             assert!(garaga_len == GARAGA_RSA_LEN, "Garaga RSA data must be 864 felts");
             let jwt_data_start: usize = GARAGA_RSA_START + 1 + garaga_len;
@@ -1228,40 +1255,20 @@ pub mod CavosAccount {
 
             Self::verify_rsa_garaga(signature, @jwks_key, @jwt_bytes);
 
-            // Verify claims - indices account for wallet_name at [12]
-            let sub_offset: usize = (*signature[13]).try_into().unwrap();
-            let sub_len: usize = (*signature[14]).try_into().unwrap();
-            let nonce_offset: usize = (*signature[15]).try_into().unwrap();
-            let nonce_len: usize = (*signature[16]).try_into().unwrap();
-            let kid_offset: usize = (*signature[17]).try_into().unwrap();
-            let kid_len: usize = (*signature[18]).try_into().unwrap();
-
-            let (header_end, payload_start, payload_end) = split_signed_data(@jwt_bytes);
-            let payload_len = payload_end - payload_start;
-
-            if jwt_iss == EXPECTED_ISS_GOOGLE {
-                self
-                    .assert_claim_decimal_match(
-                        @jwt_bytes, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
-                    );
-            } else {
-                self
-                    .assert_decoded_claim_match(
-                        @jwt_bytes, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
-                    );
-            }
+            // 6. Bind all security-sensitive claims to the signed JWT bytes
             self
-                .assert_claim_hex_match(
-                    @jwt_bytes, payload_start, payload_len, nonce_offset, nonce_len, jwt_nonce,
+                .assert_signed_jwt_claims_match(
+                    signature, @jwt_bytes, jwt_sub, jwt_nonce, jwt_exp_felt, jwt_kid, jwt_iss,
                 );
-            self.assert_hashed_claim_match(@jwt_bytes, 0, header_end, kid_offset, kid_len, jwt_kid);
 
-            assert!(
-                jwt_iss == EXPECTED_ISS_GOOGLE
-                    || jwt_iss == EXPECTED_ISS_APPLE
-                    || jwt_iss == EXPECTED_ISS_FIREBASE,
-                "Invalid JWT issuer",
-            );
+            // 7. Verify JWT not expired
+            let jwt_exp: u64 = jwt_exp_felt.try_into().expect('jwt_exp overflow');
+            assert!(now < jwt_exp, "JWT expired");
+
+            // 8. Verify address_seed = Poseidon(iss, sub, salt[, wallet_name])
+            let computed_seed = self
+                .compute_owner_address_seed(jwt_iss, jwt_sub, salt, wallet_name);
+            assert!(computed_seed == self.address_seed.read(), "Address seed mismatch");
         }
 
         /// Validates full OAuth JWT signature for outside execution AND registers the session.
@@ -1413,6 +1420,7 @@ pub mod CavosAccount {
             );
 
             let now = get_block_timestamp();
+            assert!(now >= session.time_limits.valid_after, "Session not yet active");
             assert!(now < session.usage_limits.renewal_deadline, "Renewal period expired");
 
             VALIDATED
@@ -1426,15 +1434,16 @@ pub mod CavosAccount {
         /// [0]     = OAUTH_JWT_V1 magic
         /// [1-3]   = session key (r, s, pubkey)
         /// [4-5]   = valid_until, randomness
-        /// [6-13]  = jwt_sub, jwt_nonce, jwt_exp, jwt_kid, jwt_iss, jwt_aud, salt, wallet_name
-        /// [14-19] = claim offsets: sub_offset, sub_len, nonce_offset, nonce_len, kid_offset,
-        ///           kid_len
-        /// [20]    = RSA sig length (16)
-        /// [21-36] = RSA signature (16 u128 limbs)
-        /// [37]    = witnesses length (610)
-        /// [38-647]= RSA witnesses
-        /// [648]   = JWT data byte length
-        /// [649+]  = JWT bytes (header.payload, packed as 31-byte felt252 chunks)
+        /// [6-12]  = jwt_sub, jwt_nonce, jwt_exp, jwt_kid, jwt_iss, salt, wallet_name
+        /// [13-24] = claim offsets and lengths:
+        ///           sub_offset, sub_len, nonce_offset, nonce_len, kid_offset, kid_len,
+        ///           exp_offset, exp_len, iss_offset, iss_len, aud_offset, aud_len
+        /// [25]    = RSA sig length (16)
+        /// [26-41] = RSA signature (16 u128 limbs)
+        /// [42]    = witnesses length (610)
+        /// [43-652]= RSA witnesses
+        /// [653]   = JWT data byte length
+        /// [654+]  = JWT bytes (header.payload, packed as 31-byte felt252 chunks)
         /// After JWT bytes:
         /// [jwt_end]   = valid_after
         /// [jwt_end+1] = allowed_contracts_root
@@ -1536,20 +1545,6 @@ pub mod CavosAccount {
                 .finalize();
             assert!(jwt_nonce == expected_nonce, "Nonce mismatch");
 
-            // Verify JWT not expired
-            let jwt_exp: u64 = jwt_exp_felt.try_into().expect('jwt_exp overflow');
-            let now = get_block_timestamp();
-            assert!(now < jwt_exp, "JWT expired");
-
-            // Verify address_seed = Poseidon(sub, salt, wallet_name?)
-            let computed_seed = if wallet_name != 0 {
-                PoseidonTrait::new().update(jwt_sub).update(salt).update(wallet_name).finalize()
-            } else {
-                let (h, _, _) = hades_permutation(jwt_sub, salt, 2);
-                h
-            };
-            assert!(computed_seed == self.address_seed.read(), "Address seed mismatch");
-
             // Verify JWKS key is valid and fetch in one call (fixes double-read bug)
             let registry = IJWKSRegistryDispatcher { contract_address: self.jwks_registry.read() };
             let jwks_key = registry.get_key_if_valid(jwt_kid);
@@ -1578,35 +1573,20 @@ pub mod CavosAccount {
 
             Self::verify_rsa_garaga(signature, @jwks_key, @jwt_bytes);
 
-            // Verify issuer
-            assert!(
-                jwt_iss == EXPECTED_ISS_GOOGLE
-                    || jwt_iss == EXPECTED_ISS_APPLE
-                    || jwt_iss == EXPECTED_ISS_FIREBASE,
-                "Invalid JWT issuer",
-            );
+            self
+                .assert_signed_jwt_claims_match(
+                    signature, @jwt_bytes, jwt_sub, jwt_nonce, jwt_exp_felt, jwt_kid, jwt_iss,
+                );
 
-            // Verify claims match - indices account for wallet_name at [13]
-            let sub_offset: usize = (*signature[13]).try_into().unwrap();
-            let sub_len: usize = (*signature[14]).try_into().unwrap();
-            let kid_offset: usize = (*signature[17]).try_into().unwrap();
-            let kid_len: usize = (*signature[18]).try_into().unwrap();
+            // Verify JWT not expired
+            let jwt_exp: u64 = jwt_exp_felt.try_into().expect('jwt_exp overflow');
+            let now = get_block_timestamp();
+            assert!(now < jwt_exp, "JWT expired");
 
-            let (header_end, payload_start, payload_end) = split_signed_data(@jwt_bytes);
-            let payload_len = payload_end - payload_start;
-
-            if jwt_iss == EXPECTED_ISS_GOOGLE {
-                self
-                    .assert_claim_decimal_match(
-                        @jwt_bytes, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
-                    );
-            } else {
-                self
-                    .assert_decoded_claim_match(
-                        @jwt_bytes, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
-                    );
-            }
-            self.assert_hashed_claim_match(@jwt_bytes, 0, header_end, kid_offset, kid_len, jwt_kid);
+            // Verify address_seed = Poseidon(iss, sub, salt[, wallet_name])
+            let computed_seed = self
+                .compute_owner_address_seed(jwt_iss, jwt_sub, salt, wallet_name);
+            assert!(computed_seed == self.address_seed.read(), "Address seed mismatch");
         }
 
         /// Construct a Garaga RSA2048PublicKey from JWKSKey's 24 felt252 limbs.

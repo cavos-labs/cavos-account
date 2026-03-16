@@ -16,7 +16,7 @@ On-chain OAuth wallets on Starknet. Verify Google/Apple JWTs directly in a Cairo
 
 - Verifies RSA-2048 / SHA-256 JWT signatures on-chain using [Garaga](https://github.com/keep-starknet-strange/garaga)
 - Ties ephemeral session keys to JWT nonces (Poseidon-based binding)
-- Validates issuer (`iss`) and audience (`aud`) claims against a JWKS registry
+- Validates issuer (`iss`) and expiry (`exp`) claims from the signed JWT payload
 - Enforces per-session spending policies (allowed contracts, call limits, time windows)
 - Supports Google, Apple, and Firebase as identity providers
 
@@ -25,12 +25,12 @@ On-chain OAuth wallets on Starknet. Verify Google/Apple JWTs directly in a Cairo
 ```
 cavos_account.cairo   — Main SRC-6 account contract
 jwks_registry.cairo   — Admin-controlled public key store
-deployer.cairo        — Deterministic account deployment (address = f(sub, salt))
+deployer.cairo        — Deterministic account deployment (address = f(iss, sub, salt))
 jwt/
   base64.cairo        — Base64url decoder
   jwt_parser.cairo    — JWT claim parsing utilities
 utils/
-  address_seed.cairo  — Poseidon(sub, salt) → deterministic address seed
+  address_seed.cairo  — Poseidon(iss, sub, salt) → deterministic address seed
   nonce.cairo         — Poseidon(eph_pubkey, max_block, randomness) → nonce
   base64url.cairo     — Re-exports
 ```
