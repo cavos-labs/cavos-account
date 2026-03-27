@@ -2,7 +2,6 @@
 
 // Core contracts
 pub mod cavos_account;
-pub mod deployer;
 pub mod jwks_registry;
 
 // JWT parsing

@@ -505,6 +505,8 @@ pub mod CavosAccount {
 
         /// Revoke a specific session key. Requires JWT signature for identity verification.
         fn revoke_session(ref self: ContractState, session_key: felt252) {
+            assert!(get_caller_address() == get_contract_address(), "Only self can revoke session");
+
             // Zero out the session
             let zero_session = SessionData {
                 nonce: 0,
@@ -521,6 +523,8 @@ pub mod CavosAccount {
 
         /// Emergency revoke all session keys. Authentication handled by tx validation layer.
         fn emergency_revoke(ref self: ContractState) {
+            assert!(get_caller_address() == get_contract_address(), "Only self can revoke sessions");
+
             // Increment revocation epoch — all sessions with older epoch become invalid
             let new_epoch = self.revocation_epoch.read() + 1;
             self.revocation_epoch.write(new_epoch);
@@ -720,6 +724,30 @@ pub mod CavosAccount {
             assert!(val == expected, "Claim hash mismatch after decoding");
         }
 
+        /// Assert that the bytes immediately before `value_offset` in the decoded segment
+        /// match `prefix`. Prevents offset-injection attacks where a caller-controlled
+        /// offset points to an arbitrary position rather than the intended JSON field.
+        fn assert_json_key_prefix(
+            self: @ContractState,
+            jwt_ba: @ByteArray,
+            segment_start: usize,
+            segment_len: usize,
+            value_offset: usize,
+            prefix: Span<u8>,
+        ) {
+            let prefix_len = prefix.len();
+            assert!(value_offset >= prefix_len, "value_offset too small for key prefix");
+            let decoded = base64url_decode_window(
+                jwt_ba, segment_start, segment_len, value_offset - prefix_len, prefix_len,
+            );
+            let decoded_span = decoded.span();
+            let mut i: usize = 0;
+            while i < prefix_len {
+                assert!(*decoded_span[i] == *prefix[i], "JSON key prefix mismatch");
+                i += 1;
+            }
+        }
+
         fn assert_allowed_issuer(self: @ContractState, issuer: felt252) {
             assert!(
                 issuer == EXPECTED_ISS_GOOGLE
@@ -764,9 +792,28 @@ pub mod CavosAccount {
             let (header_end, payload_start, payload_end) = split_signed_data(jwt_ba);
             let payload_len = payload_end - payload_start;
 
+            // "exp": numeric — prefix is `"exp":`
+            self
+                .assert_json_key_prefix(
+                    jwt_ba,
+                    payload_start,
+                    payload_len,
+                    exp_offset,
+                    array![34_u8, 'e', 'x', 'p', 34_u8, ':'].span(),
+                );
             self
                 .assert_claim_decimal_match(
                     jwt_ba, payload_start, payload_len, exp_offset, exp_len, jwt_exp_felt,
+                );
+
+            // "iss": string — prefix is `"iss":"`
+            self
+                .assert_json_key_prefix(
+                    jwt_ba,
+                    payload_start,
+                    payload_len,
+                    iss_offset,
+                    array![34_u8, 'i', 's', 's', 34_u8, ':', 34_u8].span(),
                 );
             self
                 .assert_decoded_claim_match(
@@ -775,19 +822,58 @@ pub mod CavosAccount {
             self.assert_allowed_issuer(jwt_iss);
 
             if jwt_iss == EXPECTED_ISS_GOOGLE {
+                // Google sub is a decimal number encoded as a JSON string: `"sub":"<digits>"`.
+                // The offset points past the opening quote, so prefix is `"sub":"` (7 bytes).
+                self
+                    .assert_json_key_prefix(
+                        jwt_ba,
+                        payload_start,
+                        payload_len,
+                        sub_offset,
+                        array![34_u8, 's', 'u', 'b', 34_u8, ':', 34_u8].span(),
+                    );
                 self
                     .assert_claim_decimal_match(
                         jwt_ba, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
                     );
             } else {
+                // Apple/Firebase sub is a JSON string — prefix is `"sub":"`
+                self
+                    .assert_json_key_prefix(
+                        jwt_ba,
+                        payload_start,
+                        payload_len,
+                        sub_offset,
+                        array![34_u8, 's', 'u', 'b', 34_u8, ':', 34_u8].span(),
+                    );
                 self
                     .assert_decoded_claim_match(
                         jwt_ba, payload_start, payload_len, sub_offset, sub_len, jwt_sub,
                     );
             }
+
+            // "nonce": string — prefix is `"nonce":"`
+            self
+                .assert_json_key_prefix(
+                    jwt_ba,
+                    payload_start,
+                    payload_len,
+                    nonce_offset,
+                    array![34_u8, 'n', 'o', 'n', 'c', 'e', 34_u8, ':', 34_u8].span(),
+                );
             self
                 .assert_claim_hex_match(
                     jwt_ba, payload_start, payload_len, nonce_offset, nonce_len, jwt_nonce,
+                );
+
+            // "kid": string in header — prefix is `"kid":"`
+            self
+                .assert_json_key_prefix(
+                    jwt_ba,
+                    0,
+                    header_end,
+                    kid_offset,
+                    array![34_u8, 'k', 'i', 'd', 34_u8, ':', 34_u8].span(),
                 );
             self.assert_hashed_claim_match(jwt_ba, 0, header_end, kid_offset, kid_len, jwt_kid);
         }
@@ -875,6 +961,10 @@ pub mod CavosAccount {
             // 5. Verify JWKS key is valid and fetch in one call (fixes double-read bug)
             let registry = IJWKSRegistryDispatcher { contract_address: self.jwks_registry.read() };
             let jwks_key = registry.get_key_if_valid(jwt_kid);
+
+            // Fix: bind the key's provider to the JWT issuer so a compromised key for
+            // one provider cannot be used to take over accounts of another provider.
+            assert!(jwks_key.provider == jwt_iss, "Key/issuer provider mismatch");
 
             // 6. Verify RSA signature using Garaga RSA-2048
             Self::verify_rsa_garaga(signature, @jwks_key, @jwt_bytes);
@@ -1229,6 +1319,9 @@ pub mod CavosAccount {
             let registry = IJWKSRegistryDispatcher { contract_address: self.jwks_registry.read() };
             let jwks_key = registry.get_key_if_valid(jwt_kid);
 
+            // Fix: bind the key's provider to the JWT issuer.
+            assert!(jwks_key.provider == jwt_iss, "Key/issuer provider mismatch");
+
             // 5. Extract JWT bytes and verify RSA signature using Garaga
             let garaga_len: usize = (*signature[GARAGA_RSA_START]).try_into().unwrap();
             assert!(garaga_len == GARAGA_RSA_LEN, "Garaga RSA data must be 864 felts");
@@ -1548,6 +1641,9 @@ pub mod CavosAccount {
             // Verify JWKS key is valid and fetch in one call (fixes double-read bug)
             let registry = IJWKSRegistryDispatcher { contract_address: self.jwks_registry.read() };
             let jwks_key = registry.get_key_if_valid(jwt_kid);
+
+            // Fix: bind the key's provider to the JWT issuer.
+            assert!(jwks_key.provider == jwt_iss, "Key/issuer provider mismatch");
 
             // Extract JWT bytes and verify RSA signature using Garaga
             let garaga_len: usize = (*signature[GARAGA_RSA_START]).try_into().unwrap();

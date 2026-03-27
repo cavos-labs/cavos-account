@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use core::hash::HashStateTrait;
+    use core::poseidon::PoseidonTrait;
     use cavos::jwt::jwt_parser::hash_utf8_bytes;
     use cavos::jwks_registry::{IJWKSRegistryDispatcher, IJWKSRegistryDispatcherTrait, JWKSKey};
     use cavos::utils::address_seed::compute_address_seed;
@@ -59,54 +61,73 @@ mod tests {
         packed
     }
 
-    fn deploy_registry() -> ContractAddress {
+    fn test_jwks_key(provider: felt252) -> JWKSKey {
+        JWKSKey {
+            n0: 36648395729831561633476177441,
+            n1: 18628444797644691941133229104,
+            n2: 22307010566628836884801097042,
+            n3: 7970223745921631780986437168,
+            n4: 61868012424815678786523267210,
+            n5: 12874544275786841402910188206,
+            n6: 55135223218608333646159570477,
+            n7: 59248040671004066870974584167,
+            n8: 39445347219060493432841545851,
+            n9: 47865203649446840318775713174,
+            n10: 18359265505157958908642137840,
+            n11: 30000239641419580735327586861,
+            n12: 62311286565993849449767840618,
+            n13: 20254659213420815486292802190,
+            n14: 948500152776400692723344126,
+            n15: 54121609856824585952775779999,
+            n16: 684287928945584569622326125,
+            n17: 9351155312901909631746702276,
+            n18: 15023051338860160215555623006,
+            n19: 11466230703282596072340822624,
+            n20: 60163985475608295599997016543,
+            n21: 2462253021,
+            n22: 0,
+            n23: 0,
+            provider: provider,
+            valid_until: 0,
+            is_active: true,
+        }
+    }
+
+    fn deploy_registry_with_provider(provider: felt252) -> ContractAddress {
         let class = declare("JWKSRegistry").unwrap().contract_class();
         let admin = test_address();
         let (registry_address, _) = class.deploy(@array![admin.into()]).unwrap();
 
         let dispatcher = IJWKSRegistryDispatcher { contract_address: registry_address };
         start_cheat_caller_address(registry_address, admin);
-        dispatcher.set_key(
-            kid_hash(),
-            JWKSKey {
-                n0: 36648395729831561633476177441,
-                n1: 18628444797644691941133229104,
-                n2: 22307010566628836884801097042,
-                n3: 7970223745921631780986437168,
-                n4: 61868012424815678786523267210,
-                n5: 12874544275786841402910188206,
-                n6: 55135223218608333646159570477,
-                n7: 59248040671004066870974584167,
-                n8: 39445347219060493432841545851,
-                n9: 47865203649446840318775713174,
-                n10: 18359265505157958908642137840,
-                n11: 30000239641419580735327586861,
-                n12: 62311286565993849449767840618,
-                n13: 20254659213420815486292802190,
-                n14: 948500152776400692723344126,
-                n15: 54121609856824585952775779999,
-                n16: 684287928945584569622326125,
-                n17: 9351155312901909631746702276,
-                n18: 15023051338860160215555623006,
-                n19: 11466230703282596072340822624,
-                n20: 60163985475608295599997016543,
-                n21: 2462253021,
-                n22: 0,
-                n23: 0,
-                provider: 0,
-                valid_until: 0,
-                is_active: true,
-            },
-        );
+        dispatcher.set_key(kid_hash(), test_jwks_key(provider));
         registry_address
     }
 
-    fn deploy_account(registry_address: ContractAddress) -> ContractAddress {
+    fn deploy_registry_with_provider_and_extra_kid(
+        provider: felt252, extra_kid: felt252,
+    ) -> ContractAddress {
+        let registry_address = deploy_registry_with_provider(provider);
+        let dispatcher = IJWKSRegistryDispatcher { contract_address: registry_address };
+        start_cheat_caller_address(registry_address, test_address());
+        dispatcher.set_key(extra_kid, test_jwks_key(provider));
+        registry_address
+    }
+
+    fn deploy_registry() -> ContractAddress {
+        deploy_registry_with_provider(GOOGLE_ISS)
+    }
+
+    fn deploy_account_with_seed(registry_address: ContractAddress, seed: felt252) -> ContractAddress {
         let class = declare("CavosAccount").unwrap().contract_class();
         let (account_address, _) = class
-            .deploy(@array![address_seed(), registry_address.into()])
+            .deploy(@array![seed, registry_address.into()])
             .unwrap();
         account_address
+    }
+
+    fn deploy_account(registry_address: ContractAddress) -> ContractAddress {
+        deploy_account_with_seed(registry_address, address_seed())
     }
 
     fn address_seed() -> felt252 {
@@ -115,6 +136,10 @@ mod tests {
 
     fn kid_hash() -> felt252 {
         hash_utf8_bytes(byte_array_to_bytes(@"test_kid").span())
+    }
+
+    fn alt_kid_hash() -> felt252 {
+        hash_utf8_bytes(byte_array_to_bytes(@"alt_kid").span())
     }
 
     fn valid_signed_jwt() -> ByteArray {
@@ -1018,11 +1043,19 @@ mod tests {
     }
 
 
-    fn build_signature(
+    fn build_signature_custom_claims(
         signed_jwt: @ByteArray,
         rsa_data: Array<felt252>,
+        session_key: felt252,
+        valid_until: felt252,
+        randomness: felt252,
+        jwt_sub: felt252,
+        jwt_nonce: felt252,
         jwt_exp_felt: felt252,
+        jwt_kid: felt252,
         jwt_iss: felt252,
+        salt: felt252,
+        wallet_name: felt252,
         valid_after: felt252,
         sub_offset: usize,
         nonce_offset: usize,
@@ -1038,16 +1071,16 @@ mod tests {
             OAUTH_SIG_MAGIC,
             SIG_R,
             SIG_S,
-            SESSION_KEY,
-            VALID_UNTIL,
-            RANDOMNESS,
-            JWT_SUB,
-            JWT_NONCE,
+            session_key,
+            valid_until,
+            randomness,
+            jwt_sub,
+            jwt_nonce,
             jwt_exp_felt,
-            kid_hash(),
+            jwt_kid,
             jwt_iss,
-            SALT,
-            WALLET_NAME,
+            salt,
+            wallet_name,
             sub_offset.into(),
             10,
             nonce_offset.into(),
@@ -1071,6 +1104,99 @@ mod tests {
         signature.append(10); // max_calls_per_tx
         signature.append(0); // spending_policies_count
         signature
+    }
+
+    fn build_signature(
+        signed_jwt: @ByteArray,
+        rsa_data: Array<felt252>,
+        jwt_exp_felt: felt252,
+        jwt_iss: felt252,
+        valid_after: felt252,
+        sub_offset: usize,
+        nonce_offset: usize,
+        kid_offset: usize,
+        exp_offset: usize,
+        exp_len: usize,
+        iss_offset: usize,
+        iss_len: usize,
+        aud_offset: usize,
+        aud_len: usize,
+    ) -> Array<felt252> {
+        build_signature_custom_claims(
+            signed_jwt,
+            rsa_data,
+            SESSION_KEY,
+            VALID_UNTIL,
+            RANDOMNESS,
+            JWT_SUB,
+            JWT_NONCE,
+            jwt_exp_felt,
+            kid_hash(),
+            jwt_iss,
+            SALT,
+            WALLET_NAME,
+            valid_after,
+            sub_offset,
+            nonce_offset,
+            kid_offset,
+            exp_offset,
+            exp_len,
+            iss_offset,
+            iss_len,
+            aud_offset,
+            aud_len,
+        )
+    }
+
+    fn valid_signature_with_offsets(
+        sub_offset: usize, nonce_offset: usize, kid_offset: usize, exp_offset: usize,
+        iss_offset: usize,
+    ) -> Array<felt252> {
+        build_signature(
+            @valid_signed_jwt(),
+            valid_rsa_data(),
+            9999999999,
+            GOOGLE_ISS,
+            0,
+            sub_offset,
+            nonce_offset,
+            kid_offset,
+            exp_offset,
+            10,
+            iss_offset,
+            27,
+            44,
+            12,
+        )
+    }
+
+    fn valid_signature_with_custom_claims(
+        jwt_sub: felt252, jwt_nonce: felt252, jwt_kid: felt252, salt: felt252, wallet_name: felt252,
+    ) -> Array<felt252> {
+        build_signature_custom_claims(
+            @valid_signed_jwt(),
+            valid_rsa_data(),
+            SESSION_KEY,
+            VALID_UNTIL,
+            RANDOMNESS,
+            jwt_sub,
+            jwt_nonce,
+            9999999999,
+            jwt_kid,
+            GOOGLE_ISS,
+            salt,
+            wallet_name,
+            0,
+            65,
+            86,
+            22,
+            159,
+            10,
+            8,
+            27,
+            44,
+            12,
+        )
     }
 
     fn session_signature() -> Array<felt252> {
@@ -1171,6 +1297,267 @@ mod tests {
             14,
         );
         run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_key_provider_not_matching_jwt_issuer() {
+        let registry = deploy_registry_with_provider(APPLE_ISS);
+        let account = deploy_account(registry);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+
+        let signature = build_signature(
+            @valid_signed_jwt(),
+            valid_rsa_data(),
+            9999999999,
+            GOOGLE_ISS,
+            0,
+            65,
+            86,
+            22,
+            159,
+            10,
+            8,
+            27,
+            44,
+            12,
+        );
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_sub_offset_pointing_to_aud() {
+        let signature = valid_signature_with_offsets(44, 86, 22, 159, 8);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_nonce_offset_pointing_to_sub() {
+        let signature = valid_signature_with_offsets(65, 65, 22, 159, 8);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_exp_offset_pointing_to_sub() {
+        let signature = valid_signature_with_offsets(65, 86, 22, 65, 8);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_iss_offset_pointing_to_aud() {
+        let signature = valid_signature_with_offsets(65, 86, 22, 159, 44);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_kid_offset_pointing_to_alg() {
+        let signature = valid_signature_with_offsets(65, 86, 8, 159, 8);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_sub_claim_value() {
+        let signature = valid_signature_with_custom_claims(JWT_SUB + 1, JWT_NONCE, kid_hash(), SALT, 0);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_nonce_claim_value() {
+        let signature = valid_signature_with_custom_claims(JWT_SUB, JWT_NONCE + 1, kid_hash(), SALT, 0);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_kid_claim_value() {
+        let signature = valid_signature_with_custom_claims(JWT_SUB, JWT_NONCE, kid_hash() + 1, SALT, 0);
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_exp_claim_value() {
+        let signature = build_signature_custom_claims(
+            @valid_signed_jwt(),
+            valid_rsa_data(),
+            SESSION_KEY,
+            VALID_UNTIL,
+            RANDOMNESS,
+            JWT_SUB,
+            JWT_NONCE,
+            9999999998,
+            kid_hash(),
+            GOOGLE_ISS,
+            SALT,
+            0,
+            0,
+            65,
+            86,
+            22,
+            159,
+            10,
+            8,
+            27,
+            44,
+            12,
+        );
+        run_validate(signature, 1700000000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_address_seed_mismatch_for_wrong_sub_account() {
+        let registry = deploy_registry();
+        let wrong_seed = compute_address_seed(GOOGLE_ISS, JWT_SUB + 1, SALT);
+        let account = deploy_account_with_seed(registry, wrong_seed);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = valid_signature_with_custom_claims(JWT_SUB, JWT_NONCE, kid_hash(), SALT, 0);
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_sub_for_other_user_account() {
+        let target_sub = JWT_SUB + 1;
+        let registry = deploy_registry();
+        let target_seed = compute_address_seed(GOOGLE_ISS, target_sub, SALT);
+        let account = deploy_account_with_seed(registry, target_seed);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = valid_signature_with_custom_claims(
+            target_sub, JWT_NONCE, kid_hash(), SALT, 0,
+        );
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_address_seed_mismatch_for_wrong_salt_account() {
+        let registry = deploy_registry();
+        let wrong_seed = compute_address_seed(GOOGLE_ISS, JWT_SUB, SALT + 1);
+        let account = deploy_account_with_seed(registry, wrong_seed);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = valid_signature_with_custom_claims(JWT_SUB, JWT_NONCE, kid_hash(), SALT, 0);
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    fn test_validate_accepts_matching_wallet_name_bound_account() {
+        let wallet_name = 0x77616c6c65745f31; // "wallet_1"
+        let registry = deploy_registry();
+        let wallet_seed = PoseidonTrait::new()
+            .update(GOOGLE_ISS)
+            .update(JWT_SUB)
+            .update(SALT)
+            .update(wallet_name)
+            .finalize();
+        let account = deploy_account_with_seed(registry, wallet_seed);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = valid_signature_with_custom_claims(
+            JWT_SUB, JWT_NONCE, kid_hash(), SALT, wallet_name,
+        );
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_wrong_wallet_name_for_bound_account() {
+        let wallet_name = 0x77616c6c65745f31; // "wallet_1"
+        let registry = deploy_registry();
+        let wallet_seed = PoseidonTrait::new()
+            .update(GOOGLE_ISS)
+            .update(JWT_SUB)
+            .update(SALT)
+            .update(wallet_name)
+            .finalize();
+        let account = deploy_account_with_seed(registry, wallet_seed);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = valid_signature_with_custom_claims(JWT_SUB, JWT_NONCE, kid_hash(), SALT, 0);
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_issuer_for_other_provider_account() {
+        let registry = deploy_registry_with_provider(APPLE_ISS);
+        let target_seed = compute_address_seed(APPLE_ISS, JWT_SUB, SALT);
+        let account = deploy_account_with_seed(registry, target_seed);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = build_signature_custom_claims(
+            @valid_signed_jwt(),
+            valid_rsa_data(),
+            SESSION_KEY,
+            VALID_UNTIL,
+            RANDOMNESS,
+            JWT_SUB,
+            JWT_NONCE,
+            9999999999,
+            kid_hash(),
+            APPLE_ISS,
+            SALT,
+            0,
+            0,
+            65,
+            86,
+            22,
+            159,
+            10,
+            8,
+            27,
+            44,
+            12,
+        );
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_rejects_forged_kid_even_with_alternate_valid_registry_key() {
+        let registry = deploy_registry_with_provider_and_extra_kid(GOOGLE_ISS, alt_kid_hash());
+        let account = deploy_account(registry);
+        let dispatcher = ICavosValidateTestDispatcher { contract_address: account };
+        let signature = valid_signature_with_custom_claims(
+            JWT_SUB, JWT_NONCE, alt_kid_hash(), SALT, 0,
+        );
+
+        start_cheat_block_timestamp(account, 1700000000);
+        start_cheat_transaction_hash(account, 0x123);
+        start_cheat_signature(account, signature.span());
+        dispatcher.__validate__(array![]);
     }
 
     #[test]

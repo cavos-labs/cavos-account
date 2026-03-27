@@ -120,7 +120,7 @@ Public keys are stored as 24 × `felt252` limbs (96-bit words, little-endian), m
 pub struct JWKSKey {
     pub n0: felt252,  pub n1: felt252,  // ...
     pub n23: felt252,
-    pub provider: felt252,
+    pub provider: felt252, // same felt value as the JWT `iss` this key is allowed to verify
     pub valid_until: u64,
     pub is_active: bool,
 }

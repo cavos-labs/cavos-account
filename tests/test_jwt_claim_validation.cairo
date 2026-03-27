@@ -36,6 +36,30 @@ mod tests {
         base64url_decode_window(jwt, payload_start, payload_len, offset, len)
     }
 
+    fn assert_bytes_eq(actual: Span<u8>, expected: Span<u8>) {
+        assert!(actual.len() == expected.len(), "decoded prefix length mismatch");
+        let mut i: usize = 0;
+        while i < actual.len() {
+            assert!(*actual[i] == *expected[i], "decoded prefix byte mismatch");
+            i += 1;
+        }
+    }
+
+    fn decode_payload_prefix(jwt: @ByteArray, value_offset: usize, prefix_len: usize) -> Array<u8> {
+        assert!(value_offset >= prefix_len, "value_offset too small for prefix");
+        decode_payload_window(jwt, value_offset - prefix_len, prefix_len)
+    }
+
+    fn decode_header_window(jwt: @ByteArray, offset: usize, len: usize) -> Array<u8> {
+        let (header_end, _, _) = split_signed_data(jwt);
+        base64url_decode_window(jwt, 0, header_end, offset, len)
+    }
+
+    fn decode_header_prefix(jwt: @ByteArray, value_offset: usize, prefix_len: usize) -> Array<u8> {
+        assert!(value_offset >= prefix_len, "value_offset too small for prefix");
+        decode_header_window(jwt, value_offset - prefix_len, prefix_len)
+    }
+
     #[test]
     fn test_signed_payload_extracts_google_exp_claim() {
         let jwt = sample_google_signed_data();
@@ -90,5 +114,69 @@ mod tests {
         let aud_hash = hash_utf8_bytes(decoded.span());
         let forged = hash_utf8_bytes(byte_array_to_bytes(@"different_client").span());
         assert!(aud_hash == forged, "forged aud should not match the signed payload");
+    }
+
+    #[test]
+    fn test_signed_payload_sub_offset_has_sub_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_payload_prefix(@jwt, 65, 7);
+        assert_bytes_eq(
+            prefix.span(), array![34_u8, 's', 'u', 'b', 34_u8, ':', 34_u8].span(),
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_signed_payload_aud_offset_does_not_match_sub_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_payload_prefix(@jwt, 44, 7);
+        assert_bytes_eq(
+            prefix.span(), array![34_u8, 's', 'u', 'b', 34_u8, ':', 34_u8].span(),
+        );
+    }
+
+    #[test]
+    fn test_signed_payload_nonce_offset_has_nonce_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_payload_prefix(@jwt, 86, 9);
+        assert_bytes_eq(
+            prefix.span(),
+            array![34_u8, 'n', 'o', 'n', 'c', 'e', 34_u8, ':', 34_u8].span(),
+        );
+    }
+
+    #[test]
+    fn test_signed_payload_exp_offset_has_exp_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_payload_prefix(@jwt, 100, 6);
+        assert_bytes_eq(prefix.span(), array![34_u8, 'e', 'x', 'p', 34_u8, ':'].span());
+    }
+
+    #[test]
+    fn test_signed_payload_iss_offset_has_iss_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_payload_prefix(@jwt, 8, 7);
+        assert_bytes_eq(
+            prefix.span(), array![34_u8, 'i', 's', 's', 34_u8, ':', 34_u8].span(),
+        );
+    }
+
+    #[test]
+    fn test_signed_header_kid_offset_has_kid_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_header_prefix(@jwt, 22, 7);
+        assert_bytes_eq(
+            prefix.span(), array![34_u8, 'k', 'i', 'd', 34_u8, ':', 34_u8].span(),
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_signed_header_alg_offset_does_not_match_kid_key_prefix() {
+        let jwt = sample_google_signed_data();
+        let prefix = decode_header_prefix(@jwt, 8, 7);
+        assert_bytes_eq(
+            prefix.span(), array![34_u8, 'k', 'i', 'd', 34_u8, ':', 34_u8].span(),
+        );
     }
 }
